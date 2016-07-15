@@ -1,0 +1,8 @@
+.pioenvs
+.clang_complete
+.gcc-flags.json
+*.zip
+*.yml
+*.bak
+pubsubclient/*
+sub_example.cpp
