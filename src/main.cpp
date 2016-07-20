@@ -26,6 +26,7 @@
 #define LED_CONTROL_MODE_CMD			5
 #define LED_CONTROL_MODE_OFF			6
 
+uint64_t time;
 Ticker tick;
 void tock();
 OneButton button(BUTTON_PIN, true);
@@ -44,9 +45,9 @@ char mqtt_server[40];
 char mqtt_user[33];
 char mqtt_token[33];
 bool saveSettings;
-bool mqttConnectedOnce;
+bool mqtt_connected;
 
-#define BUFFER_SIZE 100
+#define BUFFER_SIZE 255
 String homeName = "";
 String level = "";
 String room = "";
@@ -54,24 +55,30 @@ String deviceName = "";
 String mac = WiFi.macAddress();
 String controlTopic = mac;
 
+float altitude;
 uint16_t lux;
 uint16_t previousLux;
 float temperature;
 float previousTemperature;
 uint16_t humidity;
 uint16_t previousHumidity;
-uint32_t pressure;
-uint32_t previousPressure;
+float pressure;
+float previousPressure;
+uint8_t publishAltitude;
 bool publishLux;
 bool publishTemperature;
 bool publishHumidity;
 bool publishPressure;
 bool publishLsState;
 
+float returnAltitude(float temperature, float pressure, float sealevelPressure);
+
 bool lsisSlave;
 String lsMaster="";
 bool lsState;
 void relayController(void);
+
+uint8_t sensorStatus=0xFF;
 
 CmdMessenger cmdMessenger = CmdMessenger(Serial);
 void onReturnStatus(void);
@@ -128,6 +135,22 @@ enum
 	kSReset								//30
 };
 
+
+//void toggleLED (bool state);
+void toggleLED2 (void);
+bool ledState;
+void toggleLED (bool state)
+{
+  bool ledState = !state;
+  digitalWrite(LED_BUILTIN, ledState?HIGH:LOW);
+}
+
+void toggleLED2 (void)
+{
+  ledState^=1;
+  digitalWrite(LED_BUILTIN, ledState?HIGH:LOW);
+}
+
 void tock()
 {
 	button.tick();
@@ -153,10 +176,16 @@ void relayController()
 
 void attachCommandCallbacks(void)
 {
+  cmdMessenger.attach(kRStatus, onReturnStatus);
   cmdMessenger.attach(kRLux, onReturnLuxQuery);
   cmdMessenger.attach(kRTemp, onReturnTempQuery);
   cmdMessenger.attach(kRHumi, onReturnHumiQuery);
   cmdMessenger.attach(kRPres, onReturnPresQuery);
+}
+
+void onReturnStatus()
+{
+	sensorStatus=(uint8_t)cmdMessenger.readInt16Arg();
 }
 
 void onReturnLuxQuery()
@@ -165,6 +194,14 @@ void onReturnLuxQuery()
   lux = cmdMessenger.readInt16Arg();
 	if (abs(lux-previousLux)>0) {
 		publishLux = true;
+	}
+
+	if ((lux<10)&&(publishAltitude==0)) {
+		publishAltitude=1;
+	}
+
+	if ((lux>30)&&publishAltitude==2) {
+		publishAltitude=0;
 	}
 }
 
@@ -182,7 +219,7 @@ void onReturnHumiQuery()
 {
 	previousHumidity = humidity;
   humidity = cmdMessenger.readInt16Arg();
-	if (abs(humidity-previousHumidity)>0) {
+	if (abs(humidity-previousHumidity)>1) {
 	  publishHumidity = true;
 	}
 }
@@ -190,21 +227,26 @@ void onReturnHumiQuery()
 void onReturnPresQuery()
 {
 	previousPressure = pressure;
-  pressure = cmdMessenger.readInt32Arg();
+  pressure = (float)(cmdMessenger.readInt32Arg()/100.0);
 
-	if (abs(pressure-previousPressure)>0) {
+	if (abs(pressure-previousPressure)>0.01) {
 		publishPressure = true;
 	}
+}
+
+float returnAltitude(float temperature, float pressure, float sealevelPressure)
+{
+	//formula from http://keisan.casio.com/exec/system/1224585971
+	float altitude = ((pow((sealevelPressure/pressure), (1/5.257))-1)*(temperature+273.15))/0.0065;
+	return altitude;
 }
 
 void mqttSubCallback(const MQTT::Publish& pub) {
   //get incoming topic
   //strip out useless info
   String incomingCmd = pub.topic().substring(controlTopic.length());
-
-	if (incomingCmd=="/lightSwitch/state") {
-		String value = pub.payload_string();
-		lsState = value.toInt();
+	if (incomingCmd=="/lightSwitch/toggle") {
+		buttonClick();
 	}
 
 	if (incomingCmd=="/nightLightMode")
@@ -218,27 +260,27 @@ void mqttSubCallback(const MQTT::Publish& pub) {
 		cmdMessenger.sendCmd(kSDataPushMode, value.toInt());
 	}
 
-	if (incomingCmd=="/sense/dataInterval") {
+	if (incomingCmd=="/dataPushInterval") {
 		String value = pub.payload_string();
 		cmdMessenger.sendCmd(kSDataQueryInt, value.toInt());
 	}
 
-	if (incomingCmd=="/config/deviceName") {
+	if (incomingCmd=="/deviceName") {
 		String value = pub.payload_string();
 		deviceName = value;
 	}
 
-	if (incomingCmd=="/config/homeName") {
+	if (incomingCmd=="/homeName") {
 		String value = pub.payload_string();
 		homeName = value;
 	}
 
-	if (incomingCmd=="/config/level") {
+	if (incomingCmd=="/level") {
 		String value = pub.payload_string();
 		level = value;
 	}
 
-	if (incomingCmd=="/config/room") {
+	if (incomingCmd=="/room") {
 		String value = pub.payload_string();
 		room = value;
 	}
@@ -246,12 +288,12 @@ void mqttSubCallback(const MQTT::Publish& pub) {
 
 bool loadConfig()
 {
+
   if (SPIFFS.begin()) {
     if (SPIFFS.exists("/config.json")) {
       File configFile = SPIFFS.open("/config.json", "r");
       if (configFile) {
         size_t size = configFile.size();
-        // Allocate a buffer to store contents of the file.
         std::unique_ptr<char[]> buf(new char[size]);
 
         configFile.readBytes(buf.get(), size);
@@ -286,7 +328,7 @@ bool saveConfig()
 		if (!configFile) {
 			return false;
 		}
-		//json.printTo(Serial);
+
 		json.printTo(configFile);
 		configFile.close();
 		return true;
@@ -295,6 +337,7 @@ bool saveConfig()
 void saveConfigCallback()
 {
 		saveSettings=true;
+		cmdMessenger.sendCmd(kSLedMode,LED_CONTROL_MODE_RESTORE);
 }
 
 void enterConfigCallback(WiFiManager *myWiFiManager)
@@ -317,6 +360,8 @@ void startWifiManager()
 	//wifiManager.resetSettings();
 	wifiManager.setAPCallback(enterConfigCallback);
 	wifiManager.setSaveConfigCallback(saveConfigCallback);
+
+	//add all your parameters here
   wifiManager.addParameter(&mqtt_server_entry);
   wifiManager.addParameter(&mqtt_user_entry);
   wifiManager.addParameter(&mqtt_token_entry);
@@ -330,6 +375,7 @@ void startWifiManager()
 	if (saveSettings == true)
 	{
 		if (mqtt_server_entry.getValue()!="") {
+			toggleLED2();
 			strcpy(mqtt_server, mqtt_server_entry.getValue());
 		  strcpy(mqtt_user, mqtt_user_entry.getValue());
 		  strcpy(mqtt_token, mqtt_token_entry.getValue());
@@ -342,58 +388,62 @@ void mqttController()
 {
 	if (WiFi.status() == WL_CONNECTED) {
     if (!mqttClient.connected()) {
-			if (mqttClient.connect(MQTT::Connect(mac) .set_auth(mqtt_user, mqtt_token) .set_keepalive(300))) {
+
+			if (mqttClient.connect(MQTT::Connect(mac) .set_auth(mqtt_user, mqtt_token) .set_will(controlTopic+"/connected", "", 0, true))) {
         mqttClient.subscribe(MQTT::Subscribe()
-													.add_topic(controlTopic+"/lightSwitch/state", 1)
+													.add_topic(controlTopic+"/lightSwitch/toggle")
                       	);
-					if (!mqttConnectedOnce)
-					{
 						mqttClient.publish(MQTT::Publish(controlTopic + "/connected", mac)
 															.set_retain(true)
-															.set_qos(1)
+															.set_qos(0)
 															);
-						mqttConnectedOnce = true;
-					}
 				}
 			}
+
+			if (mqttClient.connected()) {
+				if (publishLsState == true)	{
+					publishLsState = false;
+					mqttClient.publish(MQTT::Publish(controlTopic + "/lightSwitch/state", String(lsState))
+						.set_retain(true)
+						.set_qos(0)
+					);
+					delay(10);
+				}
+
+		    if (publishLux == true) {
+		      publishLux = false;
+		      mqttClient.publish(controlTopic + "/sense/lux", String(lux));
+					delay(10);
+		    }
+
+		    if (publishTemperature == true) {
+		      publishTemperature = false;
+					mqttClient.publish(controlTopic + "/sense/temperature", String(temperature));
+					delay(10);
+		    }
+
+		    if (publishHumidity == true) {
+		      publishHumidity = false;
+		      mqttClient.publish(controlTopic + "/sense/humidity", String(humidity));
+					delay(10);
+		    }
+
+		    if (publishPressure == true) {
+		      publishPressure = false;
+		      mqttClient.publish(controlTopic + "/sense/pressure", String(pressure));
+					delay(10);
+		    }
+
+				if (publishAltitude == 1) {
+						publishAltitude = 2;
+						altitude = returnAltitude(temperature, pressure, 1013.25);
+						mqttClient.publish(MQTT::Publish(controlTopic + "/sense/altitude", String(altitude)) .set_retain(true) .set_qos(0));
+						delay(10);
+				}
+				mqttClient.loop();
+				delay(10);
+		  }
 		}
-
-	if (mqttClient.connected()) {
-
-    if (publishLux == true) {
-      publishLux = false;
-      mqttClient.publish(controlTopic + "/sense/lux", String(lux));
-    }
-
-    if (publishTemperature == true) {
-      publishTemperature = false;
-      //mqttClient.publish(pubTopic + "temperature", String(temperature));
-			mqttClient.publish(controlTopic + "/sense/temperature", String(temperature));
-    }
-
-    if (publishHumidity == true) {
-      publishHumidity = false;
-      mqttClient.publish(controlTopic + "/sense/humidity", String(humidity));
-    }
-
-    if (publishPressure == true) {
-      publishPressure = false;
-      mqttClient.publish(controlTopic + "/sense/pressure", String(pressure));
-    }
-
-		if (publishLsState == true)	{
-			publishLsState = false;
-			mqttClient.publish(MQTT::Publish(controlTopic + "/lightSwitch/state", String(lsState))
-				.set_retain(true)
-				.set_qos(1)
-			);
-		}
-  }
-	if (mqttClient.connected())
-	{
-		mqttClient.loop();
-		delay(10);
-	}
 }
 
 void setup() {
@@ -402,7 +452,7 @@ void setup() {
 	digitalWrite(LED_BUILTIN, LOW);
 	tick.attach_ms(1, tock);
 	button.setClickTicks(150);
-	button.setPressTicks(10000);
+	button.setPressTicks(6000);
 
   attachCommandCallbacks();
   cmdMessenger.printLfCr();
@@ -412,7 +462,10 @@ void setup() {
   delay(5000);
 	button.attachClick(buttonClick);
 	cmdMessenger.sendCmd(kQStatus);
-	cmdMessenger.sendCmd(kSReset);
+	if (sensorStatus!=0)
+	{
+		cmdMessenger.sendCmd(kSReset);
+	}
 
 	loadConfig();
 	mqttClient.set_server(mqtt_server);

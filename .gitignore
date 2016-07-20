@@ -6,3 +6,4 @@
 *.bak
 pubsubclient/*
 sub_example.cpp
+*.bak2
