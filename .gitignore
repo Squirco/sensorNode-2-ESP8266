@@ -5,5 +5,5 @@
 *.yml
 *.bak
 pubsubclient/*
+backups/*
 sub_example.cpp
-*.bak2

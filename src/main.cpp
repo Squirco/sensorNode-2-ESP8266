@@ -135,16 +135,8 @@ enum
 	kSReset								//30
 };
 
-
-//void toggleLED (bool state);
-void toggleLED2 (void);
 bool ledState;
-void toggleLED (bool state)
-{
-  bool ledState = !state;
-  digitalWrite(LED_BUILTIN, ledState?HIGH:LOW);
-}
-
+void toggleLED2 (void);
 void toggleLED2 (void)
 {
   ledState^=1;
@@ -207,6 +199,7 @@ void onReturnLuxQuery()
 
 void onReturnTempQuery()
 {
+	toggleLED2();
 	previousTemperature = temperature;
   temperature = (float)cmdMessenger.readInt16Arg();
 	temperature = temperature/10.0;
@@ -337,7 +330,7 @@ bool saveConfig()
 void saveConfigCallback()
 {
 		saveSettings=true;
-		cmdMessenger.sendCmd(kSLedMode,LED_CONTROL_MODE_RESTORE);
+		//cmdMessenger.sendCmd(kSLedMode,LED_CONTROL_MODE_RESTORE);
 }
 
 void enterConfigCallback(WiFiManager *myWiFiManager)
@@ -369,13 +362,11 @@ void startWifiManager()
 	wifiManager.setMinimumSignalQuality(14);
 
 	if(!wifiManager.autoConnect()){}
-
 	cmdMessenger.sendCmd(kSLedMode,LED_CONTROL_MODE_RESTORE);
-
 	if (saveSettings == true)
 	{
 		if (mqtt_server_entry.getValue()!="") {
-			toggleLED2();
+			//toggleLED2();
 			strcpy(mqtt_server, mqtt_server_entry.getValue());
 		  strcpy(mqtt_user, mqtt_user_entry.getValue());
 		  strcpy(mqtt_token, mqtt_token_entry.getValue());
